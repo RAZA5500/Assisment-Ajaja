@@ -123,8 +123,9 @@ interface EditorProps {
   zoomLevel?: number;
   onZoomChange?: (zoom: number) => void;
   showRuler?: boolean;
-  onExport?: (type: "pdf" | "docx" | "md" | "html" | "txt") => void;
+  onExport?: (type: "pdf" | "docx" | "md" | "html" | "txt", currentContent?: string) => void;
   exportingType?: "pdf" | "docx" | "md" | "html" | "txt" | null;
+  onContentChange?: (htmlContent: string) => void;
 }
 
 interface StatsModalData {
@@ -146,6 +147,7 @@ export default function Editor({
   showRuler = true,
   onExport,
   exportingType,
+  onContentChange,
 }: EditorProps) {
   const [isMounted, setIsMounted] = useState(false);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -253,6 +255,7 @@ export default function Editor({
     onUpdate: ({ editor: ed }) => {
       const html = ed.getHTML();
       latestContentRef.current = html;
+      onContentChange?.(html);
       setSaveStatus("unsaved");
       setContentStats(calculateDetailedStats(html));
 
@@ -492,7 +495,7 @@ export default function Editor({
                         <button
                           type="button"
                           onClick={() => {
-                            onExport("pdf");
+                            onExport("pdf", latestContentRef.current);
                             setDownloadDropdownOpen(false);
                           }}
                           disabled={Boolean(exportingType)}
@@ -508,7 +511,7 @@ export default function Editor({
                         <button
                           type="button"
                           onClick={() => {
-                            onExport("docx");
+                            onExport("docx", latestContentRef.current);
                             setDownloadDropdownOpen(false);
                           }}
                           disabled={Boolean(exportingType)}
@@ -524,7 +527,7 @@ export default function Editor({
                         <button
                           type="button"
                           onClick={() => {
-                            onExport("md");
+                            onExport("md", latestContentRef.current);
                             setDownloadDropdownOpen(false);
                           }}
                           disabled={Boolean(exportingType)}
@@ -540,7 +543,7 @@ export default function Editor({
                         <button
                           type="button"
                           onClick={() => {
-                            onExport("html");
+                            onExport("html", latestContentRef.current);
                             setDownloadDropdownOpen(false);
                           }}
                           disabled={Boolean(exportingType)}
@@ -556,7 +559,7 @@ export default function Editor({
                         <button
                           type="button"
                           onClick={() => {
-                            onExport("txt");
+                            onExport("txt", latestContentRef.current);
                             setDownloadDropdownOpen(false);
                           }}
                           disabled={Boolean(exportingType)}

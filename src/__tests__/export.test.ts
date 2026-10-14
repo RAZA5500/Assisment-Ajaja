@@ -3,8 +3,8 @@ import mongoose from "mongoose";
 import { NextRequest } from "next/server";
 import { connectToDatabase } from "@/lib/mongodb";
 import DocumentModel from "@/models/Document";
-import { generatePdfFromHtml } from "@/lib/pdf";
-import { generateDocxFromHtml } from "@/lib/docx";
+import { generatePdfFromHtml, buildGoogleDocsPdfHtml } from "@/lib/pdf";
+import { generateDocxFromHtml, fallbackGenerateDocx } from "@/lib/docx";
 import { GET as getPdfExport, POST as postPdfExport } from "@/app/api/documents/[id]/export/pdf/route";
 import { GET as getDocxExport, POST as postDocxExport } from "@/app/api/documents/[id]/export/docx/route";
 import { POST as postDirectPdfExport } from "@/app/api/export/pdf/route";
@@ -91,11 +91,11 @@ describe("Document Export Functionality Tests", () => {
       const richHtml = `
         <h1>Rich Google Docs Sheet</h1>
         <p>Introduction paragraph.</p>
-        <ul><li>Item 1</li><li>Item 2</li></ul>
+        <ul><li><p>Item 1</p></li><li><p>Item 2</p></li></ul>
         <blockquote>A distinguished quote</blockquote>
         <table>
           <thead><tr><th>Header 1</th><th>Header 2</th></tr></thead>
-          <tbody><tr><td>Value 1</td><td>Value 2</td></tr></tbody>
+          <tbody><tr><td><p>Value 1</p></td><td><p>Value 2</p></td></tr></tbody>
         </table>
       `;
       const buffer = await generatePdfFromHtml(richHtml, { title: "Rich Document" });
@@ -103,9 +103,37 @@ describe("Document Export Functionality Tests", () => {
       expect(buffer.subarray(0, 5).toString("utf-8")).toBe("%PDF-");
     }, 20000);
 
+    it("handles Letter format and configures @page size correctly in HTML markup", () => {
+      const a4Html = buildGoogleDocsPdfHtml("<p>Hello</p>", "Doc A4", "A4");
+      expect(a4Html).toContain("size: A4;");
+      expect(a4Html).toContain("margin: 0;");
+
+      const letterHtml = buildGoogleDocsPdfHtml("<p>Hello</p>", "Doc Letter", "Letter");
+      expect(letterHtml).toContain("size: Letter;");
+      expect(letterHtml).toContain("margin: 0;");
+    });
+
+    it("generates valid PDF buffer in Letter format", async () => {
+      const buffer = await generatePdfFromHtml("<h1>Letter Size</h1><p>Content</p>", {
+        title: "Letter Doc",
+        format: "Letter",
+      });
+      expect(buffer.length).toBeGreaterThan(1000);
+      expect(buffer.subarray(0, 5).toString("utf-8")).toBe("%PDF-");
+    }, 20000);
+
     it("handles empty or blank HTML gracefully without crashing", async () => {
       const buffer = await generatePdfFromHtml("", { title: "Empty Document" });
       expect(buffer.length).toBeGreaterThan(500);
+      expect(buffer.subarray(0, 5).toString("utf-8")).toBe("%PDF-");
+    }, 20000);
+
+    it("handles Unicode characters and special symbols in title and body", async () => {
+      const unicodeHtml = "<h1>Résumé &amp; Rapport ✨</h1><p>Café, naïve, and €100 / ¥1,000</p>";
+      const buffer = await generatePdfFromHtml(unicodeHtml, {
+        title: "Résumé & Rapport ✨",
+      });
+      expect(buffer.length).toBeGreaterThan(1000);
       expect(buffer.subarray(0, 5).toString("utf-8")).toBe("%PDF-");
     }, 20000);
   });
@@ -125,13 +153,15 @@ describe("Document Export Functionality Tests", () => {
     it("generates DOCX with tables, headings, and lists", async () => {
       const richHtml = `
         <h1>Executive Summary</h1>
-        <p>Paragraph with <i>italic</i> and <u>underline</u>.</p>
+        <p>Paragraph with <i>italic</i> and <u>underline</u> and <s>strikethrough</s>.</p>
         <h2>Metrics Table</h2>
         <table>
-          <tr><th>Quarter</th><th>Revenue</th></tr>
-          <tr><td>Q1</td><td>$10M</td></tr>
+          <tbody>
+            <tr><th>Quarter</th><th>Revenue</th></tr>
+            <tr><td><p>Q1</p></td><td><p>$10M</p></td></tr>
+          </tbody>
         </table>
-        <ul><li>Task A</li><li>Task B</li></ul>
+        <ul><li><p>Task A</p></li><li><p>Task B</p></li></ul>
       `;
       const buffer = await generateDocxFromHtml(richHtml, { title: "Metrics" });
       expect(buffer.length).toBeGreaterThan(2000);
@@ -142,6 +172,15 @@ describe("Document Export Functionality Tests", () => {
     it("handles empty or edge HTML cleanly", async () => {
       const buffer = await generateDocxFromHtml("", { title: "Blank" });
       expect(buffer.length).toBeGreaterThan(500);
+      expect(buffer[0]).toBe(0x50);
+      expect(buffer[1]).toBe(0x4b);
+    }, 15000);
+
+    it("fallback generator produces structured headings, bullet points and decodes entities", async () => {
+      const complexHtml = "<h1>Fallback Title</h1><p>Entities: &amp; &lt; &gt; &quot; &nbsp;</p><ul><li>First item</li><li>Second item</li></ul>";
+      const buffer = await fallbackGenerateDocx(complexHtml, "Fallback Title");
+      expect(Buffer.isBuffer(buffer)).toBe(true);
+      expect(buffer.length).toBeGreaterThan(1000);
       expect(buffer[0]).toBe(0x50);
       expect(buffer[1]).toBe(0x4b);
     }, 15000);
@@ -160,8 +199,10 @@ describe("Document Export Functionality Tests", () => {
       const res = await postDirectPdfExport(req);
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("application/pdf");
-      expect(res.headers.get("Content-Disposition")).toContain("attachment;");
-      expect(res.headers.get("Content-Disposition")).toContain("Adhoc%20Document.pdf");
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain("attachment;");
+      expect(disposition).toContain('filename="Adhoc Document.pdf"');
+      expect(disposition).toContain("filename*=UTF-8''Adhoc%20Document.pdf");
 
       const arrayBuf = await res.arrayBuffer();
       const buf = Buffer.from(arrayBuf);
@@ -182,7 +223,9 @@ describe("Document Export Functionality Tests", () => {
       expect(res.headers.get("Content-Type")).toBe(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       );
-      expect(res.headers.get("Content-Disposition")).toContain("Word%20Direct.docx");
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain('filename="Word Direct.docx"');
+      expect(disposition).toContain("filename*=UTF-8''Word%20Direct.docx");
 
       const arrayBuf = await res.arrayBuffer();
       const buf = Buffer.from(arrayBuf);
@@ -238,6 +281,8 @@ describe("Document Export Functionality Tests", () => {
       const res = await getPdfExport(req, { params: { id: restrictedDocId } });
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("application/pdf");
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain('filename="Quarterly Strategy Report.pdf"');
 
       const arrayBuf = await res.arrayBuffer();
       const buf = Buffer.from(arrayBuf);
@@ -267,7 +312,9 @@ describe("Document Export Functionality Tests", () => {
       const res = await postPdfExport(req, { params: { id: restrictedDocId } });
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("application/pdf");
-      expect(res.headers.get("Content-Disposition")).toContain("Live%20Draft.pdf");
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain('filename="Live Draft.pdf"');
+      expect(disposition).toContain("filename*=UTF-8''Live%20Draft.pdf");
     }, 20000);
 
     it("returns 200 for public document without any authentication", async () => {
@@ -302,6 +349,8 @@ describe("Document Export Functionality Tests", () => {
       expect(res.headers.get("Content-Type")).toBe(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       );
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain('filename="Quarterly Strategy Report.docx"');
 
       const arrayBuf = await res.arrayBuffer();
       const buf = Buffer.from(arrayBuf);
@@ -331,7 +380,9 @@ describe("Document Export Functionality Tests", () => {
 
       const res = await postDocxExport(req, { params: { id: restrictedDocId } });
       expect(res.status).toBe(200);
-      expect(res.headers.get("Content-Disposition")).toContain("Custom%20Word%20Title.docx");
+      const disposition = res.headers.get("Content-Disposition") || "";
+      expect(disposition).toContain('filename="Custom Word Title.docx"');
+      expect(disposition).toContain("filename*=UTF-8''Custom%20Word%20Title.docx");
     }, 15000);
   });
 });

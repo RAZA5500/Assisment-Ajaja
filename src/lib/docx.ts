@@ -49,7 +49,7 @@ function normalizeHtmlForWord(rawHtml: string): string {
  */
 export async function fallbackGenerateDocx(htmlContent: string, title: string): Promise<Buffer> {
   // Extract structured block items: headings, list items, and standard paragraphs
-  const blockRegex = /<(h[1-3]|p|li|blockquote)[^>]*>(.*?)<\/\1>/gis;
+  const blockRegex = /<(h[1-3]|p|li|blockquote)[^>]*>([\s\S]*?)<\/\1>/gi;
   const elements: Paragraph[] = [];
   let match: RegExpExecArray | null;
 

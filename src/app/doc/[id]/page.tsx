@@ -383,7 +383,15 @@ export default function DocumentPage() {
 
       if (!res.ok) {
         const errJson = await res.json().catch(() => null);
-        throw new Error(errJson?.error || `Export failed with status ${res.status}`);
+        const errMsg = errJson?.error || `Export failed with status ${res.status}`;
+        if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 400) {
+          toast.dismiss(loadingToast);
+          toast.error(errMsg);
+          setActiveMenu(null);
+          setDownloadSubmenuOpen(false);
+          return;
+        }
+        throw new Error(errMsg);
       }
 
       const blob = await res.blob();
@@ -563,7 +571,10 @@ export default function DocumentPage() {
     }
   };
 
-  const handleExport = (type: "pdf" | "docx" | "md" | "html" | "txt") => {
+  const handleExport = (type: "pdf" | "docx" | "md" | "html" | "txt", contentOverride?: string) => {
+    if (contentOverride !== undefined) {
+      latestContentRef.current = contentOverride;
+    }
     if (type === "pdf") return handleExportPdf();
     if (type === "docx") return handleExportDocx();
     if (type === "md") return handleExportMarkdown();
@@ -1355,6 +1366,9 @@ export default function DocumentPage() {
           showRuler={showRuler}
           onExport={handleExport}
           exportingType={exportingType}
+          onContentChange={(html) => {
+            latestContentRef.current = html;
+          }}
         />
       </main>
 

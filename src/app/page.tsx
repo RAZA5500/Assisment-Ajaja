@@ -26,6 +26,8 @@ import {
   Pencil,
   FileDown,
   ChevronDown,
+  ChevronRight,
+  Download,
   ArrowUpDown,
   Eye,
   Check,
@@ -39,6 +41,7 @@ import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import { useUser } from "@/context/UserContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDate } from "@/lib/utils";
+import { exportHtmlToMarkdown } from "@/lib/markdown";
 
 interface DocumentItem {
   _id: string;
@@ -88,6 +91,9 @@ export default function DashboardPage() {
   const [isDeletingDoc, setIsDeletingDoc] = useState(false);
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
   const sortDropdownRef = useRef<HTMLDivElement>(null);
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+  const [downloadingFormat, setDownloadingFormat] = useState<"pdf" | "docx" | "md" | "html" | "txt" | null>(null);
+  const [downloadSubmenuDocId, setDownloadSubmenuDocId] = useState<string | null>(null);
 
   // If hydrated and not logged in, redirect to login
   useEffect(() => {
@@ -104,6 +110,7 @@ export default function DashboardPage() {
       const target = event.target as Element | null;
       if (!target?.closest("[data-doc-menu]")) {
         setActiveMenuDocId(null);
+        setDownloadSubmenuDocId(null);
       }
       if (sortDropdownRef.current && !sortDropdownRef.current.contains(event.target as Node)) {
         setSortDropdownOpen(false);
@@ -327,6 +334,104 @@ export default function DashboardPage() {
       toast.error((err as Error).message || "Could not delete document");
     } finally {
       setIsDeletingDoc(false);
+    }
+  };
+
+  const handleDownloadDocument = async (
+    doc: DocumentItem,
+    format: "pdf" | "docx" | "md" | "html" | "txt"
+  ) => {
+    setDownloadingDocId(doc._id);
+    setDownloadingFormat(format);
+    const toastId = toast.loading(`Preparing ${format.toUpperCase()} download...`);
+
+    try {
+      if (format === "pdf" || format === "docx") {
+        const res = await fetch(`/api/documents/${doc._id}/export/${format}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(currentUser?.id ? { "x-user-id": currentUser.id } : {}),
+            ...(currentUser?.email ? { "x-user-email": currentUser.email } : {}),
+          },
+          body: JSON.stringify({
+            html: doc.content || "",
+            title: doc.title,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => null);
+          throw new Error(err?.error || `Download failed with status ${res.status}`);
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `${doc.title || "document"}.${format}`;
+        window.document.body.appendChild(link);
+        link.click();
+        window.document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.dismiss(toastId);
+        toast.success(`Downloaded ${doc.title}.${format}`);
+      } else if (format === "md") {
+        const md = exportHtmlToMarkdown(doc.content || "");
+        const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `${doc.title || "document"}.md`;
+        window.document.body.appendChild(link);
+        link.click();
+        window.document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.dismiss(toastId);
+        toast.success(`Downloaded ${doc.title}.md`);
+      } else if (format === "html") {
+        const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${doc.title || "Document"}</title></head><body>${doc.content || "<p></p>"}</body></html>`;
+        const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `${doc.title || "document"}.html`;
+        window.document.body.appendChild(link);
+        link.click();
+        window.document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.dismiss(toastId);
+        toast.success(`Downloaded ${doc.title}.html`);
+      } else if (format === "txt") {
+        const plain = (doc.content || "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/&amp;/gi, "&")
+          .replace(/&lt;/gi, "<")
+          .replace(/&gt;/gi, ">")
+          .replace(/&quot;/gi, '"')
+          .trim();
+        const blob = new Blob([plain], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `${doc.title || "document"}.txt`;
+        window.document.body.appendChild(link);
+        link.click();
+        window.document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        toast.dismiss(toastId);
+        toast.success(`Downloaded ${doc.title}.txt`);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.dismiss(toastId);
+      toast.error((err as Error).message || "Download failed");
+    } finally {
+      setDownloadingDocId(null);
+      setDownloadingFormat(null);
+      setActiveMenuDocId(null);
+      setDownloadSubmenuDocId(null);
     }
   };
 
@@ -946,6 +1051,63 @@ export default function DashboardPage() {
                                     <Share2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                                     <span>Share Access</span>
                                   </button>
+
+                                  {/* Download Submenu with all 5 formats */}
+                                  <div className="relative group/dl">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDownloadSubmenuDocId(
+                                          downloadSubmenuDocId === doc._id ? null : doc._id
+                                        )
+                                      }
+                                      className="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 flex items-center justify-between font-medium transition active:scale-[0.98]"
+                                    >
+                                      <span className="flex items-center gap-2.5">
+                                        <Download className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                        <span>Download as</span>
+                                      </span>
+                                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                                    </button>
+
+                                    {downloadSubmenuDocId === doc._id && (
+                                      <div className="sm:absolute sm:right-full sm:top-0 sm:mr-1 w-56 rounded-2xl bg-white dark:bg-[#1a1c20] backdrop-blur-xl border border-slate-200/90 dark:border-slate-800 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-xs">
+                                        <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800/80 mb-1 select-none">
+                                          Download Format
+                                        </div>
+                                        <div className="space-y-0.5">
+                                          {[
+                                            { type: "pdf", label: "PDF Document (.pdf)", color: "text-rose-500" },
+                                            { type: "docx", label: "Microsoft Word (.docx)", color: "text-blue-600" },
+                                            { type: "md", label: "Markdown (.md)", color: "text-indigo-500" },
+                                            { type: "html", label: "Web Page (.html)", color: "text-emerald-500" },
+                                            { type: "txt", label: "Plain Text (.txt)", color: "text-slate-400" },
+                                          ].map((fmt) => (
+                                            <button
+                                              key={fmt.type}
+                                              type="button"
+                                              disabled={Boolean(downloadingDocId)}
+                                              onClick={() =>
+                                                handleDownloadDocument(
+                                                  doc,
+                                                  fmt.type as "pdf" | "docx" | "md" | "html" | "txt"
+                                                )
+                                              }
+                                              className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-slate-700 dark:text-slate-200 font-medium transition active:scale-[0.98] disabled:opacity-50"
+                                            >
+                                              <div className="flex items-center gap-2">
+                                                <FileDown className={`w-3.5 h-3.5 ${fmt.color}`} />
+                                                <span>{fmt.label}</span>
+                                              </div>
+                                              {downloadingDocId === doc._id && downloadingFormat === fmt.type && (
+                                                <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                                              )}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
                                   {isDocumentOwner && (
                                     <>
                                       <div className="my-1 border-t border-slate-100 dark:border-slate-800/80" />
@@ -1036,6 +1198,63 @@ export default function DashboardPage() {
                         </span>
 
                         <div className="flex items-center gap-1">
+                          {/* Download Button in List View */}
+                          <div className="relative" data-doc-menu="true">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDownloadSubmenuDocId(
+                                  downloadSubmenuDocId === `list-${doc._id}` ? null : `list-${doc._id}`
+                                );
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg transition"
+                              title="Download document"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            {downloadSubmenuDocId === `list-${doc._id}` && (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute right-0 top-full mt-1.5 w-56 rounded-2xl bg-white dark:bg-[#1a1c20] backdrop-blur-xl border border-slate-200/90 dark:border-slate-800 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150 text-xs"
+                              >
+                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800/80 mb-1 select-none">
+                                  Download Format
+                                </div>
+                                <div className="space-y-0.5">
+                                  {[
+                                    { type: "pdf", label: "PDF Document (.pdf)", color: "text-rose-500" },
+                                    { type: "docx", label: "Microsoft Word (.docx)", color: "text-blue-600" },
+                                    { type: "md", label: "Markdown (.md)", color: "text-indigo-500" },
+                                    { type: "html", label: "Web Page (.html)", color: "text-emerald-500" },
+                                    { type: "txt", label: "Plain Text (.txt)", color: "text-slate-400" },
+                                  ].map((fmt) => (
+                                    <button
+                                      key={fmt.type}
+                                      type="button"
+                                      disabled={Boolean(downloadingDocId)}
+                                      onClick={() =>
+                                        handleDownloadDocument(
+                                          doc,
+                                          fmt.type as "pdf" | "docx" | "md" | "html" | "txt"
+                                        )
+                                      }
+                                      className="w-full text-left px-3 py-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between text-slate-700 dark:text-slate-200 font-medium transition active:scale-[0.98] disabled:opacity-50"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <FileDown className={`w-3.5 h-3.5 ${fmt.color}`} />
+                                        <span>{fmt.label}</span>
+                                      </div>
+                                      {downloadingDocId === doc._id && downloadingFormat === fmt.type && (
+                                        <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                                      )}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
                           <button
                             type="button"
                             onClick={(e) => handleOpenShare(e, doc)}

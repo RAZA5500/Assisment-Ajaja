@@ -25,12 +25,14 @@ export async function POST(request: NextRequest) {
     });
 
     const filename = sanitizeFilename(title);
+    const asciiFilename = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, '\\"');
+    const encodedFilename = encodeURIComponent(filename);
 
     return new NextResponse(new Uint8Array(docxBuffer), {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}.docx"; filename*=UTF-8''${encodeURIComponent(filename)}.docx`,
+        "Content-Disposition": `attachment; filename="${asciiFilename}.docx"; filename*=UTF-8''${encodedFilename}.docx`,
         "Content-Length": docxBuffer.length.toString(),
       },
     });

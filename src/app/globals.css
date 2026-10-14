@@ -315,10 +315,16 @@ body {
 
 /* Print layout optimizations */
 @media print {
-  body {
-    background: white !important;
-    color: black !important;
+  @page {
+    size: auto;
+    margin: 20mm;
   }
+
+  body, .dark body {
+    background: white !important;
+    color: #1e293b !important;
+  }
+
   header,
   nav,
   .no-print,
@@ -328,6 +334,7 @@ body {
   .fixed-status {
     display: none !important;
   }
+
   .gdocs-sheet {
     box-shadow: none !important;
     border: none !important;
@@ -335,8 +342,36 @@ body {
     padding: 0 !important;
     max-width: 100% !important;
     width: 100% !important;
+    background: white !important;
+    color: #1e293b !important;
   }
+
   .prose-editor {
     padding: 0 !important;
+    color: #1e293b !important;
+  }
+
+  /* High fidelity print color overrides for dark mode */
+  .dark .gdocs-sheet,
+  .dark .prose-editor {
+    background-color: transparent !important;
+    color: #1e293b !important;
+  }
+
+  .dark .prose-editor th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+  }
+
+  .dark .prose-editor blockquote {
+    background-color: #f8fafc !important;
+    color: #334155 !important;
+    border-left-color: #3b82f6 !important;
+  }
+
+  .dark .prose-editor pre,
+  .dark .prose-editor code {
+    background-color: #f1f5f9 !important;
+    color: #1e293b !important;
   }
 }
