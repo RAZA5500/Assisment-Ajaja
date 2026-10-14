@@ -323,6 +323,85 @@ describe("Document Model & API Route RBAC Integration Tests", () => {
     // Clean up
     await DocumentModel.findByIdAndDelete(testDocId);
   });
+
+  it("17. RBAC: Test Account (test@ex.com) shares document by email with hraza5701@gmail.com; second account can view and edit without Access Restricted (HTTP 200)", async () => {
+    const TEST_USER_ID = "user_test_account";
+    const HRAZA_USER_ID = "user_hraza_5701";
+    const HRAZA_EMAIL = "hraza5701@gmail.com";
+
+    // 1. Create document as Test Account
+    const createReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": TEST_USER_ID, "x-user-email": "test@ex.com" },
+      body: {
+        title: "Test Account Shared Document",
+        content: "<p>Original content from test account</p>",
+        ownerId: TEST_USER_ID,
+      },
+    });
+    const createRes = await createDocument(createReq);
+    expect(createRes.status).toBe(201);
+    const docData = await createRes.json();
+    const sharedDocId = docData._id;
+
+    // 2. Share by direct email with hraza5701@gmail.com
+    const shareReq = makeRequest(`http://localhost:3000/api/documents/${sharedDocId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": TEST_USER_ID, "x-user-email": "test@ex.com" },
+      body: {
+        userId: TEST_USER_ID,
+        userEmail: "test@ex.com",
+        sharedWith: [HRAZA_EMAIL],
+        viewers: [],
+      },
+    });
+    const shareRes = await patchDocumentShare(shareReq, { params: { id: sharedDocId } });
+    expect(shareRes.status).toBe(200);
+    const shareData = await shareRes.json();
+    expect(shareData.sharedWith).toContain(HRAZA_EMAIL);
+
+    // 3. Second account lists documents on dashboard (GET /api/documents)
+    const listReq = makeRequest(
+      `http://localhost:3000/api/documents?userId=${HRAZA_USER_ID}&userEmail=${HRAZA_EMAIL}&filter=all`,
+      {
+        headers: { "x-user-id": HRAZA_USER_ID, "x-user-email": HRAZA_EMAIL },
+      }
+    );
+    const listRes = await getDocuments(listReq);
+    expect(listRes.status).toBe(200);
+    const listData = await listRes.json();
+    expect(listData.some((d: { _id: string }) => d._id === sharedDocId)).toBe(true);
+
+    // 4. Second account opens document (GET /api/documents/[id]) - must be 200, NOT 403 Forbidden
+    const getReq = makeRequest(
+      `http://localhost:3000/api/documents/${sharedDocId}?userId=${HRAZA_USER_ID}&userEmail=${HRAZA_EMAIL}`,
+      {
+        headers: { "x-user-id": HRAZA_USER_ID, "x-user-email": HRAZA_EMAIL },
+      }
+    );
+    const getRes = await getDocumentById(getReq, { params: { id: sharedDocId } });
+    expect(getRes.status).toBe(200);
+    const getDocData = await getRes.json();
+    expect(getDocData.title).toBe("Test Account Shared Document");
+
+    // 5. Second account updates document content (PATCH /api/documents/[id])
+    const patchReq = makeRequest(`http://localhost:3000/api/documents/${sharedDocId}`, {
+      method: "PATCH",
+      headers: { "x-user-id": HRAZA_USER_ID, "x-user-email": HRAZA_EMAIL },
+      body: {
+        userId: HRAZA_USER_ID,
+        userEmail: HRAZA_EMAIL,
+        content: "<p>Successfully edited by second account hraza5701@gmail.com!</p>",
+      },
+    });
+    const patchRes = await patchDocumentById(patchReq, { params: { id: sharedDocId } });
+    expect(patchRes.status).toBe(200);
+    const patchedData = await patchRes.json();
+    expect(patchedData.content).toBe("<p>Successfully edited by second account hraza5701@gmail.com!</p>");
+
+    // Cleanup
+    await DocumentModel.findByIdAndDelete(sharedDocId);
+  });
 });
 
 describe("Markdown Parser & Plain Text Importer Tests", () => {

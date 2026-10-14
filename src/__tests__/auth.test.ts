@@ -307,4 +307,33 @@ describe("Authentication & Demo Credentials API Integration Tests", () => {
     const loginData = await loginRes.json();
     expect(loginData.error).toContain("Incorrect password");
   });
+
+  it("18. POST /api/auth/login allows second account hraza5701@gmail.com with password 12345678 (HTTP 200)", async () => {
+    const req = makeJsonRequest("http://localhost:3000/api/auth/login", "POST", {
+      email: "hraza5701@gmail.com",
+      password: "12345678",
+    });
+
+    const res = await loginRoute(req);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.user.id).toBe("user_hraza_5701");
+    expect(data.user.email).toBe("hraza5701@gmail.com");
+    expect(data.user.name).toBe("Hraza");
+  });
+
+  it("19. POST /api/auth/login rejects incorrect password for hraza5701@gmail.com (HTTP 401)", async () => {
+    const req = makeJsonRequest("http://localhost:3000/api/auth/login", "POST", {
+      email: "hraza5701@gmail.com",
+      password: "wrongpassword999",
+    });
+
+    const res = await loginRoute(req);
+    expect(res.status).toBe(401);
+
+    const data = await res.json();
+    expect(data.error).toContain("Incorrect password");
+  });
 });
