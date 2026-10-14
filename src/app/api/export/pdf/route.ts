@@ -27,12 +27,14 @@ export async function POST(request: NextRequest) {
     });
 
     const filename = sanitizeFilename(title);
+    const asciiFilename = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, '\\"');
+    const encodedFilename = encodeURIComponent(filename);
 
     return new NextResponse(new Uint8Array(pdfBuffer), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}.pdf"; filename*=UTF-8''${encodeURIComponent(filename)}.pdf`,
+        "Content-Disposition": `attachment; filename="${asciiFilename}.pdf"; filename*=UTF-8''${encodedFilename}.pdf`,
         "Content-Length": pdfBuffer.length.toString(),
       },
     });
