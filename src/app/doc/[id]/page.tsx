@@ -35,6 +35,7 @@ import {
   FileDown,
   BookOpen,
   ChevronDown,
+  Globe,
 } from "lucide-react";
 import Editor, { SaveStatus } from "@/components/Editor";
 import ShareModal from "@/components/ShareModal";
@@ -53,6 +54,8 @@ interface DocumentData {
   ownerId: string;
   sharedWith: string[];
   viewers?: string[];
+  generalAccess?: "restricted" | "anyoneWithLink";
+  generalAccessRole?: "viewer" | "editor";
   createdAt: string;
   updatedAt: string;
 }
@@ -114,35 +117,41 @@ export default function DocumentPage() {
     let isCancelled = false;
     if (!docId || !isHydrated) return;
 
-    if (!currentUser) {
-      router.push(`/login?redirect=/doc/${docId}`);
-      return;
-    }
-
     setIsLoading(true);
     setAccessDenied({ denied: false });
     setNotFound(false);
 
     const load = async () => {
       try {
-        const queryParams = new URLSearchParams({
-          userId: currentUser.id,
-        });
-        if (currentUser.email) {
+        const queryParams = new URLSearchParams();
+        if (currentUser?.id) {
+          queryParams.set("userId", currentUser.id);
+        }
+        if (currentUser?.email) {
           queryParams.set("userEmail", currentUser.email);
         }
 
-        const res = await fetch(`/api/documents/${docId}?${queryParams.toString()}`, {
-          headers: {
-            "x-user-id": currentUser.id,
-            "x-user-email": currentUser.email || "",
-          },
-        });
+        const headers: Record<string, string> = {};
+        if (currentUser?.id) {
+          headers["x-user-id"] = currentUser.id;
+        }
+        if (currentUser?.email) {
+          headers["x-user-email"] = currentUser.email;
+        }
+
+        const res = await fetch(
+          `/api/documents/${docId}${queryParams.toString() ? `?${queryParams.toString()}` : ""}`,
+          { headers }
+        );
 
         if (isCancelled) return;
 
         if (res.status === 403) {
           const errorData = await res.json();
+          if (!currentUser) {
+            router.push(`/login?redirect=/doc/${docId}`);
+            return;
+          }
           if (!isCancelled) {
             setAccessDenied({
               denied: true,
@@ -153,7 +162,11 @@ export default function DocumentPage() {
           return;
         }
 
-        if (res.status === 404) {
+        if (res.status === 400 || res.status === 404) {
+          if (!currentUser && res.status !== 400) {
+            router.push(`/login?redirect=/doc/${docId}`);
+            return;
+          }
           if (!isCancelled) {
             setNotFound(true);
             setIsLoading(false);
@@ -162,7 +175,15 @@ export default function DocumentPage() {
         }
 
         if (!res.ok) {
-          throw new Error("Failed to load document");
+          if (!currentUser) {
+            router.push(`/login?redirect=/doc/${docId}`);
+            return;
+          }
+          if (!isCancelled) {
+            setNotFound(true);
+            setIsLoading(false);
+          }
+          return;
         }
 
         const data: DocumentData = await res.json();
@@ -251,22 +272,28 @@ export default function DocumentPage() {
 
   // Handle title rename
   const handleTitleUpdate = async (newTitle: string) => {
-    if (!currentUser) return;
-    const trimmed = newTitle.trim() || "Untitled Document";
+    const trimmed = newTitle.trim().slice(0, 200) || "Untitled Document";
     setDocTitle(trimmed);
 
+
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (currentUser?.id) {
+        headers["x-user-id"] = currentUser.id;
+      }
+      if (currentUser?.email) {
+        headers["x-user-email"] = currentUser.email;
+      }
+
       const res = await fetch(`/api/documents/${docId}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": currentUser.id,
-          "x-user-email": currentUser.email || "",
-        },
+        headers,
         body: JSON.stringify({
           title: trimmed,
-          userId: currentUser.id,
-          userEmail: currentUser.email,
+          userId: currentUser?.id || "public-editor",
+          userEmail: currentUser?.email || "",
         }),
       });
 
@@ -285,21 +312,26 @@ export default function DocumentPage() {
 
   // Handle content save
   const handleSaveContent = async (htmlContent: string) => {
-    if (!currentUser) return;
     try {
       latestContentRef.current = htmlContent;
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (currentUser?.id) {
+        headers["x-user-id"] = currentUser.id;
+      }
+      if (currentUser?.email) {
+        headers["x-user-email"] = currentUser.email;
+      }
+
       const res = await fetch(`/api/documents/${docId}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-id": currentUser.id,
-          "x-user-email": currentUser.email || "",
-        },
+        headers,
         body: JSON.stringify({
           content: htmlContent,
-          userId: currentUser.id,
-          userEmail: currentUser.email,
+          userId: currentUser?.id || "public-editor",
+          userEmail: currentUser?.email || "",
         }),
       });
 
@@ -318,10 +350,11 @@ export default function DocumentPage() {
             }
           : prev
       );
+      setSaveStatus("saved");
     } catch (err) {
-      console.error("Save error:", err);
-      toast.error("Failed to save changes");
-      throw err;
+      console.error(err);
+      setSaveStatus("unsaved");
+      toast.error((err as Error).message || "Auto-save failed");
     }
   };
 
@@ -464,7 +497,7 @@ export default function DocumentPage() {
   }
 
   // Loading skeleton
-  if (isLoading || !document || !currentUser) {
+  if (isLoading || !document || (!currentUser && document?.generalAccess !== "anyoneWithLink")) {
     return (
       <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950">
         <div className="h-16 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 flex items-center justify-between">
@@ -481,37 +514,53 @@ export default function DocumentPage() {
     );
   }
 
-  const userEmail = (currentUser.email || "").toLowerCase().trim();
-  const currentUserId = currentUser.id;
-
-  const isOwner =
-    currentUserId === document.ownerId ||
-    (Boolean(userEmail) && (document.ownerId || "").toLowerCase().trim() === userEmail);
-
-  const isShared = Boolean(
-    document.sharedWith?.some(
-      (uid) =>
-        uid === currentUserId ||
-        (Boolean(userEmail) && (uid || "").toLowerCase().trim() === userEmail)
-    )
-  );
-
-  const isViewer = Boolean(
-    (document.viewers || []).some(
-      (uid) =>
-        uid === currentUserId ||
-        (Boolean(userEmail) && (uid || "").toLowerCase().trim() === userEmail)
-    )
-  );
-  const canEdit = isOwner || (isShared && !isViewer);
-  const isReadOnly = !canEdit || editorMode === "viewing";
+  const userEmail = (currentUser?.email || "").toLowerCase().trim();
+  const currentUserId = currentUser?.id || "";
   const ownerUser = getUserById(document.ownerId);
 
-  // Active collaborators presence simulation (owner + shared users)
-  const collaborators = [
-    ownerUser,
-    ...(document.sharedWith || []).map((uid) => getUserById(uid)),
-  ].filter(Boolean);
+  const isOwner = currentUserId
+    ? currentUserId === document.ownerId ||
+      (Boolean(userEmail) && (document.ownerId || "").toLowerCase().trim() === userEmail) ||
+      (ownerUser && ownerUser.id === currentUserId) ||
+      (ownerUser && Boolean(userEmail) && ownerUser.email.toLowerCase().trim() === userEmail)
+    : false;
+
+  const isShared = currentUserId
+    ? Boolean(
+        document.sharedWith?.some(
+          (uid) =>
+            uid === currentUserId ||
+            (Boolean(userEmail) && (uid || "").toLowerCase().trim() === userEmail)
+        )
+      )
+    : false;
+
+  const isViewer = currentUserId
+    ? Boolean(
+        (document.viewers || []).some(
+          (uid) =>
+            uid === currentUserId ||
+            (Boolean(userEmail) && (uid || "").toLowerCase().trim() === userEmail)
+        )
+      )
+    : false;
+
+  const isPublicLink = document.generalAccess === "anyoneWithLink";
+  const isPublicEditor = isPublicLink && document.generalAccessRole === "editor";
+  const canEdit = isOwner || (isShared && !isViewer) || isPublicEditor;
+  const isReadOnly = !canEdit || editorMode === "viewing";
+
+  // Active collaborators presence simulation (owner + shared users, deduplicated)
+  const collaboratorsMap = new Map<string, ReturnType<typeof getUserById>>();
+  if (ownerUser) collaboratorsMap.set(ownerUser.id, ownerUser);
+  (document.sharedWith || []).forEach((uid) => {
+    const u = getUserById(uid);
+    if (u && !collaboratorsMap.has(u.id)) {
+      collaboratorsMap.set(u.id, u);
+    }
+  });
+  const collaborators = Array.from(collaboratorsMap.values()).filter(Boolean);
+
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f8fafd] dark:bg-[#141517] text-slate-900 dark:text-slate-100">
@@ -876,7 +925,7 @@ export default function DocumentPage() {
             {/* Active Collaborators Presence Avatars */}
             <div className="hidden md:flex items-center -space-x-2 overflow-hidden pl-2">
               {collaborators.map((user) => {
-                const isCurrent = user?.id === currentUser.id;
+                const isCurrent = Boolean(currentUser && user?.id === currentUser.id);
                 const isUserOwner = user?.id === document.ownerId;
                 const isUserViewer = (document.viewers || []).includes(user?.id || "");
                 const roleBadge = isUserOwner ? "Owner" : isUserViewer ? "Viewer" : "Editor";
@@ -996,7 +1045,11 @@ export default function DocumentPage() {
               onClick={() => setIsShareModalOpen(true)}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition active:scale-95"
             >
-              <Lock className="w-3.5 h-3.5" />
+              {document.generalAccess === "anyoneWithLink" ? (
+                <Globe className="w-3.5 h-3.5" />
+              ) : (
+                <Lock className="w-3.5 h-3.5" />
+              )}
               <span>Share</span>
               {document.sharedWith && document.sharedWith.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/25 text-white font-bold">
@@ -1049,13 +1102,17 @@ export default function DocumentPage() {
         ownerId={document.ownerId}
         sharedWith={document.sharedWith || []}
         viewers={document.viewers || []}
-        onShareUpdated={(newSharedWith, newViewers) => {
+        generalAccess={document.generalAccess || "restricted"}
+        generalAccessRole={document.generalAccessRole || "viewer"}
+        onShareUpdated={(newSharedWith, newViewers, newGeneralAccess, newGeneralAccessRole) => {
           setDocument((prev) =>
             prev
               ? {
                   ...prev,
                   sharedWith: newSharedWith,
                   viewers: newViewers || prev.viewers || [],
+                  generalAccess: newGeneralAccess || prev.generalAccess || "restricted",
+                  generalAccessRole: newGeneralAccessRole || prev.generalAccessRole || "viewer",
                 }
               : prev
           );

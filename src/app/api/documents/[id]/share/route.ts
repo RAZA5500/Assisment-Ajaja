@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import mongoose from "mongoose";
 import { connectToDatabase } from "@/lib/mongodb";
 import DocumentModel from "@/models/Document";
-import { getEffectiveUser } from "@/lib/auth";
+import { getEffectiveUser, findUserByEmail } from "@/lib/auth";
 
 interface RouteParams {
   params: {
@@ -20,7 +20,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: "Invalid document ID format" }, { status: 400 });
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON request body" }, { status: 400 });
+    }
+
     const {
       userId: bodyUserId,
       userEmail: bodyUserEmail,
@@ -29,6 +35,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       action,
       targetUserId,
       targetRole,
+      removeUserId,
       generalAccess,
       generalAccessRole,
     } = body;
@@ -71,57 +78,136 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     let hasShareUpdate = false;
 
     // 1. General access settings (Restricted vs Anyone with the link)
-    if (generalAccess === "restricted" || generalAccess === "anyoneWithLink") {
-      doc.generalAccess = generalAccess;
-      hasShareUpdate = true;
+    if (typeof generalAccess === "string") {
+      const gaLower = generalAccess.toLowerCase().trim();
+      if (gaLower === "restricted" || gaLower === "anyonewithlink") {
+        doc.generalAccess = gaLower === "anyonewithlink" ? "anyoneWithLink" : "restricted";
+        hasShareUpdate = true;
+      }
     }
 
-    if (generalAccessRole === "viewer" || generalAccessRole === "editor") {
-      doc.generalAccessRole = generalAccessRole;
-      hasShareUpdate = true;
+    if (typeof generalAccessRole === "string") {
+      const garLower = generalAccessRole.toLowerCase().trim();
+      if (garLower === "viewer" || garLower === "editor") {
+        doc.generalAccessRole = garLower as "viewer" | "editor";
+        hasShareUpdate = true;
+      }
+    }
+
+    // Validate targetRole if provided
+    if (targetRole !== undefined) {
+      if (typeof targetRole !== "string" || !["viewer", "editor"].includes(targetRole.toLowerCase().trim())) {
+        return NextResponse.json(
+          { error: "Invalid targetRole: must be 'viewer' or 'editor'" },
+          { status: 400 }
+        );
+      }
     }
 
     // 2. Collaborators access list
     if (Array.isArray(sharedWith)) {
       // Direct replacement of shared list (filtering out owner and duplicates)
-      doc.sharedWith = Array.from(new Set(sharedWith.filter((uid: string) => !isTargetOwner(uid))));
+      doc.sharedWith = Array.from(new Set(sharedWith.filter((uid: string) => typeof uid === "string" && uid.trim() && !isTargetOwner(uid))));
+
+      const sharedIdentifiersLower = new Set<string>();
+      doc.sharedWith.forEach((s: string) => {
+        sharedIdentifiersLower.add(s.toLowerCase());
+        const u = findUserByEmail(s);
+        if (u) {
+          sharedIdentifiersLower.add(u.id.toLowerCase());
+          sharedIdentifiersLower.add(u.email.toLowerCase());
+        }
+      });
+
       if (Array.isArray(viewers)) {
-        doc.viewers = Array.from(new Set(viewers.filter((uid: string) => !isTargetOwner(uid) && doc.sharedWith.includes(uid))));
+        doc.viewers = Array.from(
+          new Set(
+            viewers.filter(
+              (uid: string) =>
+                typeof uid === "string" &&
+                uid.trim() &&
+                !isTargetOwner(uid) &&
+                sharedIdentifiersLower.has(uid.toLowerCase())
+            )
+          )
+        );
       } else {
         // Retain existing viewers that are still in sharedWith
-        doc.viewers = (doc.viewers || []).filter((uid: string) => doc.sharedWith.includes(uid));
+        doc.viewers = (doc.viewers || []).filter((uid: string) =>
+          sharedIdentifiersLower.has(uid.toLowerCase())
+        );
       }
       hasShareUpdate = true;
-    } else if (action && targetUserId) {
-      if (action === "add") {
-        if (!isTargetOwner(targetUserId) && !doc.sharedWith.includes(targetUserId)) {
+    } else if (removeUserId || action === "remove") {
+      const userToRemove = removeUserId || targetUserId;
+      if (userToRemove && typeof userToRemove === "string") {
+        const removeLower = userToRemove.toLowerCase().trim();
+        const removeUser = findUserByEmail(userToRemove);
+        const removeIds = new Set<string>([removeLower]);
+        if (removeUser) {
+          removeIds.add(removeUser.id.toLowerCase());
+          removeIds.add(removeUser.email.toLowerCase());
+        }
+        doc.sharedWith = (doc.sharedWith || []).filter((uid: string) => !removeIds.has(uid.toLowerCase()));
+        doc.viewers = (doc.viewers || []).filter((uid: string) => !removeIds.has(uid.toLowerCase()));
+        hasShareUpdate = true;
+      }
+    } else if (targetUserId && (action || targetRole)) {
+      if (typeof targetUserId !== "string" || !targetUserId.trim()) {
+        return NextResponse.json({ error: "targetUserId must be a valid string" }, { status: 400 });
+      }
+
+      if (isTargetOwner(targetUserId)) {
+        return NextResponse.json(
+          { error: "Cannot modify permissions for the document owner" },
+          { status: 400 }
+        );
+      }
+
+      const targetLower = targetUserId.toLowerCase().trim();
+      const isViewerRole = typeof targetRole === "string" && targetRole.toLowerCase().trim() === "viewer";
+      const isEditorRole = typeof targetRole === "string" && targetRole.toLowerCase().trim() === "editor";
+
+      if (action === "updateRole") {
+        if (!isViewerRole && !isEditorRole) {
+          return NextResponse.json(
+            { error: "Role must be 'viewer' or 'editor'" },
+            { status: 400 }
+          );
+        }
+        if (!doc.sharedWith.some((uid: string) => uid.toLowerCase() === targetLower)) {
           doc.sharedWith.push(targetUserId);
         }
-        if (targetRole === "Viewer") {
-          if (!doc.viewers) doc.viewers = [];
-          if (!doc.viewers.includes(targetUserId)) doc.viewers.push(targetUserId);
-        } else if (targetRole === "Editor") {
-          doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
-        }
-        hasShareUpdate = true;
-      } else if (action === "updateRole") {
-        if (targetRole === "Viewer") {
-          if (!doc.viewers) doc.viewers = [];
-          if (!doc.viewers.includes(targetUserId)) doc.viewers.push(targetUserId);
+        if (!doc.viewers) doc.viewers = [];
+        if (isViewerRole) {
+          if (!doc.viewers.some((uid: string) => uid.toLowerCase() === targetLower)) {
+            doc.viewers.push(targetUserId);
+          }
         } else {
-          doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
+          doc.viewers = doc.viewers.filter((uid: string) => uid.toLowerCase() !== targetLower);
         }
         hasShareUpdate = true;
-      } else if (action === "remove") {
-        doc.sharedWith = doc.sharedWith.filter((uid: string) => uid !== targetUserId);
-        doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
+      } else {
+        // "add" or implicit role assignment
+        const alreadyShared = doc.sharedWith.some((uid: string) => uid.toLowerCase() === targetLower);
+        if (!alreadyShared) {
+          doc.sharedWith.push(targetUserId);
+        }
+        if (!doc.viewers) doc.viewers = [];
+        if (isViewerRole) {
+          if (!doc.viewers.some((uid: string) => uid.toLowerCase() === targetLower)) {
+            doc.viewers.push(targetUserId);
+          }
+        } else if (isEditorRole) {
+          doc.viewers = doc.viewers.filter((uid: string) => uid.toLowerCase() !== targetLower);
+        }
         hasShareUpdate = true;
       }
     }
 
     if (!hasShareUpdate) {
       return NextResponse.json(
-        { error: "Invalid share payload: provide 'sharedWith' array, 'action', or 'generalAccess'" },
+        { error: "Invalid share payload: provide 'sharedWith' array, 'action', 'removeUserId', or 'generalAccess'" },
         { status: 400 }
       );
     }

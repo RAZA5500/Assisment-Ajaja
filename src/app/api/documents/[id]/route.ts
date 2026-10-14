@@ -87,8 +87,23 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: "Invalid document ID format" }, { status: 400 });
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON request body" }, { status: 400 });
+    }
+
     const { title, content, userId: bodyUserId, userEmail: bodyUserEmail } = body;
+
+    if (title !== undefined && typeof title !== "string") {
+      return NextResponse.json({ error: "Document title must be a string" }, { status: 400 });
+    }
+
+    if (content !== undefined && typeof content !== "string") {
+      return NextResponse.json({ error: "Document content must be a string" }, { status: 400 });
+    }
+
     const user = getEffectiveUser(
       request,
       bodyUserId,
@@ -107,8 +122,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     // If document is public with Editor role, edits are allowed
     if (isPublicEditor) {
       if (title !== undefined) {
-        doc.title = title.trim() || "Untitled Document";
+        doc.title = title.trim().slice(0, 200) || "Untitled Document";
       }
+
       if (content !== undefined) {
         doc.content = content;
       }
@@ -147,7 +163,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    if (isViewer || (isPublicLink && !isOwner && !isShared && doc.generalAccessRole === "viewer")) {
+    if ((!isOwner && isViewer) || (isPublicLink && !isOwner && !isShared && doc.generalAccessRole === "viewer")) {
       return NextResponse.json(
         {
           error: "Access denied. Viewers have read-only permissions on this document.",
@@ -157,8 +173,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     if (title !== undefined) {
-      doc.title = title.trim() || "Untitled Document";
+      doc.title = title.trim().slice(0, 200) || "Untitled Document";
     }
+
 
     if (content !== undefined) {
       doc.content = content;

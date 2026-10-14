@@ -57,7 +57,13 @@ export function parseMarkdownToHtml(markdown: string): string {
     // 6. Strikethrough: ~~text~~
     result = result.replace(/~~(.*?)~~/g, "<s>$1</s>");
 
-    // 7. Re-insert inline code
+    // 7. Links: [text](url)
+    result = result.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+|\/[^\s)]*|#[^\s)]*)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+
+    // 8. Re-insert inline code
     codeTokens.forEach((codeHtml, idx) => {
       result = result.replace(`@@CODE_TOKEN_${idx}@@`, codeHtml);
     });
@@ -153,9 +159,48 @@ export function parseMarkdownToHtml(markdown: string): string {
       continue;
     }
 
+    // Markdown Table parsing (| Header 1 | Header 2 |)
+    if (trimmed.startsWith("|") && trimmed.endsWith("|") && i + 1 < lines.length) {
+      const nextTrimmed = lines[i + 1].trim();
+      const isSeparator =
+        nextTrimmed.startsWith("|") &&
+        nextTrimmed.endsWith("|") &&
+        /^\|[\s\-:|]+\|$/.test(nextTrimmed);
+      if (isSeparator) {
+        closeOpenLists();
+        const headerCells = trimmed
+          .slice(1, -1)
+          .split("|")
+          .map((c) => formatInline(c.trim()));
+        const headerHtml = `<thead><tr>${headerCells.map((c) => `<th>${c}</th>`).join("")}</tr></thead>`;
+
+        i++; // skip separator line
+        const bodyRows: string[] = [];
+
+        while (
+          i + 1 < lines.length &&
+          lines[i + 1].trim().startsWith("|") &&
+          lines[i + 1].trim().endsWith("|")
+        ) {
+          i++;
+          const rowLine = lines[i].trim();
+          const cells = rowLine
+            .slice(1, -1)
+            .split("|")
+            .map((c) => formatInline(c.trim()));
+          bodyRows.push(`<tr>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`);
+        }
+
+        const bodyHtml = bodyRows.length > 0 ? `<tbody>${bodyRows.join("")}</tbody>` : "";
+        htmlOutput.push(`<table>${headerHtml}${bodyHtml}</table>`);
+        continue;
+      }
+    }
+
     // Normal paragraph
     closeOpenLists();
     htmlOutput.push(`<p>${formatInline(trimmed)}</p>`);
+
   }
 
   closeOpenLists();
@@ -222,7 +267,16 @@ export function exportHtmlToMarkdown(html: string): string {
       const cells: string[] = [];
       const cellMatches = rMatch.match(/<(td|th)[^>]*>([\s\S]*?)<\/(td|th)>/gi) || [];
       for (const cMatch of cellMatches) {
-        const text = cMatch
+        let text = cMatch
+          .replace(/<\/?(td|th)[^>]*>/gi, "")
+          .replace(/<p[^>]*>/gi, "")
+          .replace(/<\/p>/gi, " ")
+          .replace(/<br\s*\/?>/gi, " ")
+          .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/(strong|b)>/gi, "**$2**")
+          .replace(/<(em|i)[^>]*>([\s\S]*?)<\/(em|i)>/gi, "*$2*")
+          .replace(/<(s|del|strike)[^>]*>([\s\S]*?)<\/(s|del|strike)>/gi, "~~$2~~")
+          .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+          .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
           .replace(/<[^>]*>/g, "")
           .replace(/\s+/g, " ")
           .trim();
@@ -298,6 +352,7 @@ export function exportHtmlToMarkdown(html: string): string {
   content = content.replace(/<(em|i)[^>]*>([\s\S]*?)<\/(em|i)>/gi, "*$2*");
   content = content.replace(/<(s|del|strike)[^>]*>([\s\S]*?)<\/(s|del|strike)>/gi, "~~$2~~");
   content = content.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`");
+  content = content.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)");
 
   // 10. Strip remaining HTML tags
   content = content.replace(/<[^>]+>/g, "");

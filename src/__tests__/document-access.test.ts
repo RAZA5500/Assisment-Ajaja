@@ -25,10 +25,11 @@ function makeRequest(
   options: {
     method?: string;
     body?: unknown;
+    rawBody?: string;
     headers?: Record<string, string>;
   } = {}
 ) {
-  const { method = "GET", body, headers = {} } = options;
+  const { method = "GET", body, rawBody, headers = {} } = options;
   const reqInit: RequestInit = {
     method,
     headers: {
@@ -36,7 +37,9 @@ function makeRequest(
       ...headers,
     },
   };
-  if (body !== undefined) {
+  if (rawBody !== undefined) {
+    reqInit.body = rawBody;
+  } else if (body !== undefined) {
     reqInit.body = JSON.stringify(body);
   }
   return new NextRequest(new Request(url, reqInit));
@@ -402,6 +405,403 @@ describe("Document Model & API Route RBAC Integration Tests", () => {
     // Cleanup
     await DocumentModel.findByIdAndDelete(sharedDocId);
   });
+
+  it("18. General Access: 'anyoneWithLink' with role 'viewer' permits public viewing (200) without auth, but denies editing (403)", async () => {
+    // 1. Alice creates document
+    const createReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        title: "Public Link Viewer Test",
+        content: "<p>Original public link content</p>",
+        ownerId: ALICE_ID,
+      },
+    });
+    const createRes = await createDocument(createReq);
+    expect(createRes.status).toBe(201);
+    const docData = await createRes.json();
+    const publicDocId = docData._id;
+
+    // 2. Set general access to 'anyoneWithLink' and role 'viewer'
+    const shareReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        generalAccess: "anyoneWithLink",
+        generalAccessRole: "viewer",
+      },
+    });
+    const shareRes = await patchDocumentShare(shareReq, { params: { id: publicDocId } });
+    expect(shareRes.status).toBe(200);
+    const shareData = await shareRes.json();
+    expect(shareData.generalAccess).toBe("anyoneWithLink");
+    expect(shareData.generalAccessRole).toBe("viewer");
+
+    // 3. Anonymous user (no x-user-id, no queryParams) can view (HTTP 200)
+    const anonGetReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}`);
+    const anonGetRes = await getDocumentById(anonGetReq, { params: { id: publicDocId } });
+    expect(anonGetRes.status).toBe(200);
+    const anonGetData = await anonGetRes.json();
+    expect(anonGetData.title).toBe("Public Link Viewer Test");
+
+    // 4. Anonymous user or uninvited user attempts edit with role 'viewer' -> HTTP 403 Forbidden
+    const uninvitedEditReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}`, {
+      method: "PATCH",
+      headers: { "x-user-id": BOB_ID },
+      body: {
+        userId: BOB_ID,
+        content: "<p>Hacked by uninvited viewer</p>",
+      },
+    });
+    const uninvitedEditRes = await patchDocumentById(uninvitedEditReq, { params: { id: publicDocId } });
+    expect(uninvitedEditRes.status).toBe(403);
+
+    // Cleanup
+    await DocumentModel.findByIdAndDelete(publicDocId);
+  });
+
+  it("19. General Access: 'anyoneWithLink' with role 'editor' permits editing (200), reverting to 'restricted' blocks access", async () => {
+    // 1. Alice creates document
+    const createReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        title: "Public Link Editor Test",
+        content: "<p>Original content</p>",
+        ownerId: ALICE_ID,
+      },
+    });
+    const createRes = await createDocument(createReq);
+    expect(createRes.status).toBe(201);
+    const docData = await createRes.json();
+    const publicDocId = docData._id;
+
+    // 2. Set general access to 'anyoneWithLink' and role 'editor'
+    const shareReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        generalAccess: "anyoneWithLink",
+        generalAccessRole: "editor",
+      },
+    });
+    const shareRes = await patchDocumentShare(shareReq, { params: { id: publicDocId } });
+    expect(shareRes.status).toBe(200);
+
+    // 3. Public edit succeeds (HTTP 200)
+    const publicEditReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}`, {
+      method: "PATCH",
+      body: {
+        content: "<p>Updated via public link editor</p>",
+      },
+    });
+    const publicEditRes = await patchDocumentById(publicEditReq, { params: { id: publicDocId } });
+    expect(publicEditRes.status).toBe(200);
+    const publicEditData = await publicEditRes.json();
+    expect(publicEditData.content).toBe("<p>Updated via public link editor</p>");
+
+    // 4. Revert general access to 'restricted'
+    const restrictReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        generalAccess: "restricted",
+      },
+    });
+    const restrictRes = await patchDocumentShare(restrictReq, { params: { id: publicDocId } });
+    expect(restrictRes.status).toBe(200);
+
+    // 5. Unauthenticated user is now blocked (HTTP 400/403)
+    const anonReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}`);
+    const anonRes = await getDocumentById(anonReq, { params: { id: publicDocId } });
+    expect([400, 403]).toContain(anonRes.status);
+
+    // 6. Uninvited user Bob is now blocked (HTTP 403)
+    const bobReq = makeRequest(`http://localhost:3000/api/documents/${publicDocId}?userId=${BOB_ID}`);
+    const bobRes = await getDocumentById(bobReq, { params: { id: publicDocId } });
+    expect(bobRes.status).toBe(403);
+
+    // Cleanup
+    await DocumentModel.findByIdAndDelete(publicDocId);
+  });
+
+  it("20. PATCH /api/documents/[id]/share handles lowercase 'viewer'/'editor' and case-insensitive user removal", async () => {
+    // 1. Create a document by Alice
+    const createReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        title: "Case Insensitive Role Test",
+        ownerId: ALICE_ID,
+      },
+    });
+    const createRes = await createDocument(createReq);
+    expect(createRes.status).toBe(201);
+    const doc = await createRes.json();
+    const docId = doc._id;
+
+    // 2. Share with Bob with lowercase targetRole: "viewer"
+    const shareViewerReq = makeRequest(`http://localhost:3000/api/documents/${docId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        targetUserId: BOB_ID,
+        targetRole: "viewer",
+      },
+    });
+    const shareViewerRes = await patchDocumentShare(shareViewerReq, { params: { id: docId } });
+    expect(shareViewerRes.status).toBe(200);
+    const viewerDoc = await shareViewerRes.json();
+    expect(viewerDoc.sharedWith).toContain(BOB_ID);
+    expect(viewerDoc.viewers).toContain(BOB_ID);
+
+    // 3. Update Bob with lowercase targetRole: "editor"
+    const shareEditorReq = makeRequest(`http://localhost:3000/api/documents/${docId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        targetUserId: BOB_ID,
+        targetRole: "editor",
+      },
+    });
+    const shareEditorRes = await patchDocumentShare(shareEditorReq, { params: { id: docId } });
+    expect(shareEditorRes.status).toBe(200);
+    const editorDoc = await shareEditorRes.json();
+    expect(editorDoc.sharedWith).toContain(BOB_ID);
+    expect(editorDoc.viewers || []).not.toContain(BOB_ID);
+
+    // 4. Remove Bob case-insensitively using upper/mixed case ID
+    const removeReq = makeRequest(`http://localhost:3000/api/documents/${docId}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        removeUserId: BOB_ID.toUpperCase(),
+      },
+    });
+    const removeRes = await patchDocumentShare(removeReq, { params: { id: docId } });
+    expect(removeRes.status).toBe(200);
+    const removedDoc = await removeRes.json();
+    expect(removedDoc.sharedWith).not.toContain(BOB_ID);
+
+    // Cleanup
+    await DocumentModel.findByIdAndDelete(docId);
+  });
+
+  it("21. API routes reject malformed JSON with HTTP 400 Bad Request", async () => {
+    // POST /api/documents with malformed JSON
+    const badPostReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      rawBody: "invalid-json-body-{{{",
+    });
+    const badPostRes = await createDocument(badPostReq);
+    expect(badPostRes.status).toBe(400);
+    const badPostData = await badPostRes.json();
+    expect(badPostData.error).toContain("Invalid JSON");
+
+    // PATCH /api/documents/[id] with malformed JSON
+    const badPatchReq = makeRequest(`http://localhost:3000/api/documents/${createdDocId}`, {
+      method: "PATCH",
+      rawBody: "invalid-json-body-{{{",
+    });
+    const badPatchRes = await patchDocumentById(badPatchReq, { params: { id: createdDocId } });
+    expect(badPatchRes.status).toBe(400);
+
+    // PATCH /api/documents/[id]/share with malformed JSON
+    const badShareReq = makeRequest(`http://localhost:3000/api/documents/${createdDocId}/share`, {
+      method: "PATCH",
+      rawBody: "invalid-json-body-{{{",
+    });
+    const badShareRes = await patchDocumentShare(badShareReq, { params: { id: createdDocId } });
+    expect(badShareRes.status).toBe(400);
+  });
+
+  it("22. POST /api/documents auto-filters owner from sharedWith/viewers and clamps long titles", async () => {
+    const longTitle = "A".repeat(300);
+    const req = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        title: longTitle,
+        ownerId: ALICE_ID,
+        sharedWith: [ALICE_ID, BOB_ID],
+        viewers: [ALICE_ID, CHARLIE_ID],
+      },
+    });
+    const res = await createDocument(req);
+    expect(res.status).toBe(201);
+    const data = await res.json();
+    expect(data.title.length).toBeLessThanOrEqual(200);
+    expect(data.sharedWith).toEqual([BOB_ID, CHARLIE_ID]);
+    expect(data.viewers).toEqual([CHARLIE_ID]);
+
+    await DocumentModel.findByIdAndDelete(data._id);
+  });
+
+  it("23. RBAC: Document Owner is never restricted by viewers list and retains full edit permissions (HTTP 200)", async () => {
+    // 1. Create doc by Alice
+    const doc = await DocumentModel.create({
+      title: "Owner In Viewers Test",
+      ownerId: ALICE_ID,
+      content: "<p>Original</p>",
+      viewers: [ALICE_ID], // corrupted or manually added
+      sharedWith: [],
+    });
+
+    // 2. Alice can edit her own document despite being in viewers
+    const editReq = makeRequest(`http://localhost:3000/api/documents/${doc._id}`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        content: "<p>Owner successfully edited despite viewer list</p>",
+      },
+    });
+    const editRes = await patchDocumentById(editReq, { params: { id: doc._id.toString() } });
+    expect(editRes.status).toBe(200);
+    const editedData = await editRes.json();
+    expect(editedData.content).toContain("Owner successfully edited");
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
+
+  it("24. PATCH /api/documents/[id]/share rejects attempting to modify owner role (HTTP 400)", async () => {
+    const doc = await DocumentModel.create({
+      title: "Owner Role Guard Test",
+      ownerId: ALICE_ID,
+      content: "<p>Original</p>",
+    });
+
+    const req = makeRequest(`http://localhost:3000/api/documents/${doc._id}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        targetUserId: ALICE_ID,
+        action: "updateRole",
+        targetRole: "viewer",
+      },
+    });
+    const res = await patchDocumentShare(req, { params: { id: doc._id.toString() } });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("owner");
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
+
+  it("25. PATCH /api/documents/[id]/share rejects invalid targetRole with HTTP 400 Bad Request", async () => {
+    const doc = await DocumentModel.create({
+      title: "Invalid Role Test",
+      ownerId: ALICE_ID,
+      content: "<p>Original</p>",
+    });
+
+    const req = makeRequest(`http://localhost:3000/api/documents/${doc._id}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        targetUserId: BOB_ID,
+        targetRole: "admin_super_user",
+      },
+    });
+    const res = await patchDocumentShare(req, { params: { id: doc._id.toString() } });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("Invalid targetRole");
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
+
+  it("26. Documents routes reject non-string title and content with HTTP 400 Bad Request", async () => {
+    // POST with non-string title
+    const badPostReq = makeRequest("http://localhost:3000/api/documents", {
+      method: "POST",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        title: 12345,
+        ownerId: ALICE_ID,
+      },
+    });
+    const badPostRes = await createDocument(badPostReq);
+    expect(badPostRes.status).toBe(400);
+
+    // PATCH with non-string content
+    const doc = await DocumentModel.create({
+      title: "Type Check Test",
+      ownerId: ALICE_ID,
+      content: "<p>Original</p>",
+    });
+    const badPatchReq = makeRequest(`http://localhost:3000/api/documents/${doc._id}`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        content: { invalid: "object" },
+      },
+    });
+    const badPatchRes = await patchDocumentById(badPatchReq, { params: { id: doc._id.toString() } });
+    expect(badPatchRes.status).toBe(400);
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
+
+  it("27. PATCH /api/documents/[id]/share handles uppercase General Access and Role ('ANYONEWITHLINK', 'EDITOR')", async () => {
+    const doc = await DocumentModel.create({
+      title: "Case Insensitive General Access",
+      ownerId: ALICE_ID,
+      content: "<p>Original</p>",
+    });
+
+    const req = makeRequest(`http://localhost:3000/api/documents/${doc._id}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        generalAccess: "ANYONEWITHLINK",
+        generalAccessRole: "EDITOR",
+      },
+    });
+    const res = await patchDocumentShare(req, { params: { id: doc._id.toString() } });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.generalAccess).toBe("anyoneWithLink");
+    expect(data.generalAccessRole).toBe("editor");
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
+
+  it("28. PATCH /api/documents/[id]/share removes collaborator by email when stored by ID", async () => {
+    const doc = await DocumentModel.create({
+      title: "Cross Identifier Removal Test",
+      ownerId: ALICE_ID,
+      sharedWith: [BOB_ID],
+      viewers: [BOB_ID],
+    });
+
+    // Remove Bob using his email address instead of his user ID
+    const req = makeRequest(`http://localhost:3000/api/documents/${doc._id}/share`, {
+      method: "PATCH",
+      headers: { "x-user-id": ALICE_ID },
+      body: {
+        userId: ALICE_ID,
+        removeUserId: "bob@example.com",
+      },
+    });
+    const res = await patchDocumentShare(req, { params: { id: doc._id.toString() } });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.sharedWith).not.toContain(BOB_ID);
+    expect(data.viewers).not.toContain(BOB_ID);
+
+    await DocumentModel.findByIdAndDelete(doc._id);
+  });
 });
 
 describe("Markdown Parser & Plain Text Importer Tests", () => {
@@ -477,5 +877,44 @@ Line 3`;
   it("exportHtmlToMarkdown handles empty and whitespace strings gracefully", () => {
     expect(exportHtmlToMarkdown("")).toBe("");
     expect(exportHtmlToMarkdown("   ")).toBe("");
+  });
+
+  it("Parses markdown tables into semantic HTML table elements", () => {
+    const mdTable = `| Name | Role | Status |
+| --- | :---: | ---: |
+| Alice | Owner | Active |
+| Bob | Editor | Pending |`;
+
+    const html = parseMarkdownToHtml(mdTable);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<thead><tr><th>Name</th><th>Role</th><th>Status</th></tr></thead>");
+    expect(html).toContain("<tbody>");
+    expect(html).toContain("<tr><td>Alice</td><td>Owner</td><td>Active</td></tr>");
+    expect(html).toContain("<tr><td>Bob</td><td>Editor</td><td>Pending</td></tr>");
+    expect(html).toContain("</tbody>");
+    expect(html).toContain("</table>");
+  });
+
+  it("Parses markdown links [text](url) to HTML anchors and exports anchors back to markdown links", () => {
+    const md = "Visit the [Next.js Documentation](https://nextjs.org) for details.";
+    const html = parseMarkdownToHtml(md);
+    expect(html).toContain('<a href="https://nextjs.org" target="_blank" rel="noopener noreferrer">Next.js Documentation</a>');
+
+    const exportedMd = exportHtmlToMarkdown(html);
+    expect(exportedMd).toContain("[Next.js Documentation](https://nextjs.org)");
+  });
+
+  it("Preserves bold, italic, code, and links within table cells during markdown export", () => {
+    const htmlTable = `<table>
+      <thead>
+        <tr><th>Feature</th><th>Details</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Security</strong></td><td><code>Strict RBAC</code> &amp; <a href="https://example.com">Auth Guide</a></td></tr>
+      </tbody>
+    </table>`;
+
+    const md = exportHtmlToMarkdown(htmlTable);
+    expect(md).toContain("| **Security** | `Strict RBAC` & [Auth Guide](https://example.com) |");
   });
 });

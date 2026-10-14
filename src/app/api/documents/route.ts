@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectToDatabase } from "@/lib/mongodb";
 import DocumentModel from "@/models/Document";
-import { getEffectiveUser, getEffectiveUserId } from "@/lib/auth";
+import { getEffectiveUser, getEffectiveUserId, findUserByEmail } from "@/lib/auth";
 
 // GET /api/documents?userId=...&userEmail=...&filter=all|owned|shared&search=...
 export async function GET(request: NextRequest) {
@@ -63,8 +63,31 @@ export async function POST(request: NextRequest) {
   try {
     await connectToDatabase();
 
-    const body = await request.json();
-    const { title, content, ownerId, sharedWith } = body;
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON request body" },
+        { status: 400 }
+      );
+    }
+
+    const { title, content, ownerId, sharedWith, viewers, generalAccess, generalAccessRole } = body;
+
+    if (title !== undefined && typeof title !== "string") {
+      return NextResponse.json(
+        { error: "Document title must be a string" },
+        { status: 400 }
+      );
+    }
+
+    if (content !== undefined && typeof content !== "string") {
+      return NextResponse.json(
+        { error: "Document content must be a string" },
+        { status: 400 }
+      );
+    }
 
     const effectiveOwnerId = getEffectiveUserId(request, ownerId);
 
@@ -75,21 +98,53 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sanitizedSharedWith = Array.isArray(sharedWith)
-      ? Array.from(
-          new Set(
-            sharedWith.filter(
-              (id: unknown) => typeof id === "string" && id !== effectiveOwnerId
-            )
-          )
+    const effectiveUser = getEffectiveUser(request, effectiveOwnerId);
+    const ownerIdentifiersLower = (effectiveUser?.identifiers || [effectiveOwnerId]).map((i) => i.toLowerCase());
+
+    const rawShared = Array.isArray(sharedWith) ? sharedWith : [];
+    const rawViewers = Array.isArray(viewers) ? viewers : [];
+    const allCollaborators = Array.from(new Set([...rawShared, ...rawViewers]));
+
+    const sanitizedSharedWith = allCollaborators.filter(
+      (id: unknown) =>
+        typeof id === "string" &&
+        id.trim() &&
+        !ownerIdentifiersLower.includes(id.trim().toLowerCase())
+    );
+
+    const sharedIdentifiersLower = new Set<string>();
+    sanitizedSharedWith.forEach((s: string) => {
+      sharedIdentifiersLower.add(s.toLowerCase());
+      const u = findUserByEmail(s);
+      if (u) {
+        sharedIdentifiersLower.add(u.id.toLowerCase());
+        sharedIdentifiersLower.add(u.email.toLowerCase());
+      }
+    });
+
+    const sanitizedViewers = Array.from(
+      new Set(
+        rawViewers.filter(
+          (id: unknown) =>
+            typeof id === "string" &&
+            id.trim() &&
+            !ownerIdentifiersLower.includes(id.trim().toLowerCase()) &&
+            sharedIdentifiersLower.has(id.trim().toLowerCase())
         )
-      : [];
+      )
+    );
+
+    const gaLower = typeof generalAccess === "string" ? generalAccess.toLowerCase().trim() : "";
+    const garLower = typeof generalAccessRole === "string" ? generalAccessRole.toLowerCase().trim() : "";
 
     const newDoc = await DocumentModel.create({
-      title: title && title.trim() ? title.trim() : "Untitled Document",
-      content: content ?? "<p>Start writing your document...</p>",
+      title: typeof title === "string" && title.trim() ? title.trim().slice(0, 200) : "Untitled Document",
+      content: typeof content === "string" ? content : "<p>Start writing your document...</p>",
       ownerId: effectiveOwnerId,
       sharedWith: sanitizedSharedWith,
+      viewers: sanitizedViewers,
+      generalAccess: gaLower === "anyonewithlink" ? "anyoneWithLink" : "restricted",
+      generalAccessRole: garLower === "editor" ? "editor" : "viewer",
     });
 
     return NextResponse.json(newDoc, { status: 201 });
@@ -101,3 +156,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

@@ -47,6 +47,8 @@ interface DocumentItem {
   ownerId: string;
   sharedWith: string[];
   viewers?: string[];
+  generalAccess?: "restricted" | "anyoneWithLink";
+  generalAccessRole?: "viewer" | "editor";
   createdAt: string;
   updatedAt: string;
 }
@@ -205,11 +207,13 @@ export default function DashboardPage() {
         headers: {
           "Content-Type": "application/json",
           "x-user-id": currentUser.id,
+          "x-user-email": currentUser.email || "",
         },
         body: JSON.stringify({
           title,
           content,
           ownerId: currentUser.id,
+          userEmail: currentUser.email || "",
         }),
       });
 
@@ -250,17 +254,20 @@ export default function DashboardPage() {
     e.preventDefault();
     if (!renameTarget || !currentUser) return;
 
-    const trimmed = newTitleValue.trim() || "Untitled Document";
+    const trimmed = newTitleValue.trim().slice(0, 200) || "Untitled Document";
+
     try {
       const res = await fetch(`/api/documents/${renameTarget._id}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           "x-user-id": currentUser.id,
+          "x-user-email": currentUser.email || "",
         },
         body: JSON.stringify({
           title: trimmed,
           userId: currentUser.id,
+          userEmail: currentUser.email || "",
         }),
       });
 
@@ -292,10 +299,18 @@ export default function DashboardPage() {
 
     setIsDeletingDoc(true);
     try {
-      const res = await fetch(`/api/documents/${deleteTarget._id}?userId=${currentUser.id}`, {
+      const queryParams = new URLSearchParams({
+        userId: currentUser.id,
+      });
+      if (currentUser.email) {
+        queryParams.set("userEmail", currentUser.email);
+      }
+
+      const res = await fetch(`/api/documents/${deleteTarget._id}?${queryParams.toString()}`, {
         method: "DELETE",
         headers: {
           "x-user-id": currentUser.id,
+          "x-user-email": currentUser.email || "",
         },
       });
 
@@ -330,18 +345,21 @@ export default function DashboardPage() {
 
   const currentUserEmail = (currentUser?.email || "").toLowerCase().trim();
 
-  // Helper to check ownership by both ID and email
   const isDocOwner = useCallback(
     (doc: DocumentItem) => {
       if (!currentUserId) return false;
       const docOwner = (doc.ownerId || "").toLowerCase().trim();
+      const ownerUser = getUserById(doc.ownerId);
       return (
         doc.ownerId === currentUserId ||
-        (Boolean(currentUserEmail) && docOwner === currentUserEmail)
+        (Boolean(currentUserEmail) && docOwner === currentUserEmail) ||
+        (ownerUser && ownerUser.id === currentUserId) ||
+        (ownerUser && Boolean(currentUserEmail) && ownerUser.email.toLowerCase().trim() === currentUserEmail)
       );
     },
-    [currentUserId, currentUserEmail]
+    [currentUserId, currentUserEmail, getUserById]
   );
+
 
   // Quick stats: accurate total, owned, and shared counts across entire workspace
   const stats = useMemo(() => {
@@ -1121,7 +1139,9 @@ export default function DashboardPage() {
           ownerId={shareDocTarget.ownerId}
           sharedWith={shareDocTarget.sharedWith || []}
           viewers={shareDocTarget.viewers || []}
-          onShareUpdated={(newSharedWith, newViewers) => {
+          generalAccess={shareDocTarget.generalAccess || "restricted"}
+          generalAccessRole={shareDocTarget.generalAccessRole || "viewer"}
+          onShareUpdated={(newSharedWith, newViewers, newGeneralAccess, newGeneralAccessRole) => {
             setDocuments((prev) =>
               prev.map((d) =>
                 d._id === shareDocTarget._id
@@ -1129,6 +1149,8 @@ export default function DashboardPage() {
                       ...d,
                       sharedWith: newSharedWith,
                       viewers: newViewers || d.viewers || [],
+                      generalAccess: newGeneralAccess || d.generalAccess || "restricted",
+                      generalAccessRole: newGeneralAccessRole || d.generalAccessRole || "viewer",
                     }
                   : d
               )
@@ -1139,6 +1161,8 @@ export default function DashboardPage() {
                     ...prev,
                     sharedWith: newSharedWith,
                     viewers: newViewers || prev.viewers || [],
+                    generalAccess: newGeneralAccess || prev.generalAccess || "restricted",
+                    generalAccessRole: newGeneralAccessRole || prev.generalAccessRole || "viewer",
                   }
                 : null
             );

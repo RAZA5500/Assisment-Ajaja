@@ -336,4 +336,80 @@ describe("Authentication & Demo Credentials API Integration Tests", () => {
     const data = await res.json();
     expect(data.error).toContain("Incorrect password");
   });
+
+  it("20. GET /api/auth/me omits password from response (security audit)", async () => {
+    const req = makeJsonRequest("http://localhost:3000/api/auth/me", "GET", undefined, {
+      "x-user-id": "user_alice_123",
+    });
+
+    const res = await meRoute(req);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.user.id).toBe("user_alice_123");
+    expect(data.user.password).toBeUndefined();
+  });
+
+  it("21. GET /api/auth/me recognizes registered users via header without session cookie", async () => {
+    const email = `me_lookup_${Date.now()}@example.com`;
+    const signupReq = makeJsonRequest("http://localhost:3000/api/auth/signup", "POST", {
+      name: "Header User",
+      email,
+      password: "securepassword",
+    });
+    const signupRes = await signupRoute(signupReq);
+    const signupData = await signupRes.json();
+    const createdUserId = signupData.user.id;
+
+    const meReq = makeJsonRequest("http://localhost:3000/api/auth/me", "GET", undefined, {
+      "x-user-id": createdUserId,
+    });
+    const meRes = await meRoute(meReq);
+    expect(meRes.status).toBe(200);
+
+    const meData = await meRes.json();
+    expect(meData.user.id).toBe(createdUserId);
+    expect(meData.user.name).toBe("Header User");
+    expect(meData.user.password).toBeUndefined();
+  });
+
+  it("22. POST /api/auth/login rejects malformed JSON with HTTP 400 Bad Request", async () => {
+    const rawReq = new NextRequest(
+      new Request("http://localhost:3000/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "invalid-json-body-{{{",
+      })
+    );
+    const res = await loginRoute(rawReq);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("Invalid JSON");
+  });
+
+  it("23. POST /api/auth/signup rejects malformed JSON with HTTP 400 Bad Request", async () => {
+    const rawReq = new NextRequest(
+      new Request("http://localhost:3000/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "invalid-json-body-{{{",
+      })
+    );
+    const res = await signupRoute(rawReq);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain("Invalid JSON");
+  });
+
+  it("24. GET /api/auth/me rejects unregistered fake x-user-id header with HTTP 401 Unauthenticated", async () => {
+    const req = makeJsonRequest("http://localhost:3000/api/auth/me", "GET", undefined, {
+      "x-user-id": "fake_unregistered_account_999",
+    });
+    const res = await meRoute(req);
+    expect(res.status).toBe(401);
+    const data = await res.json();
+    expect(data.error).toContain("Unauthenticated");
+    expect(data.user).toBeNull();
+  });
 });
+
