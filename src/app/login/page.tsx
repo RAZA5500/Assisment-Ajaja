@@ -137,6 +137,14 @@ function AuthForm() {
     toast.info("Filled demo credentials (test@ex.com)");
   };
 
+  // Select second account from dropdown & auto-fill credentials
+  const handleSelectSecondAccount = () => {
+    setEmail("hraza5701@gmail.com");
+    setPassword("12345678");
+    setIsDropdownOpen(false);
+    toast.info("Filled second account credentials (hraza5701@gmail.com)");
+  };
+
   return (
     <div className="min-h-screen flex flex-col justify-center py-10 sm:px-6 lg:px-8 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 relative overflow-hidden transition-colors">
       {/* Ambient background glows */}
@@ -276,7 +284,7 @@ function AuthForm() {
                 {isDropdownOpen && (
                   <div className="absolute right-0 mt-2 w-64 rounded-2xl bg-white/95 dark:bg-[#1a1c20]/95 backdrop-blur-xl border border-slate-200/90 dark:border-slate-800 shadow-2xl z-50 p-1.5 animate-in fade-in zoom-in-95 duration-150">
                     <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800/80 mb-1 select-none">
-                      Demo Account
+                      Demo Accounts
                     </div>
                     <div className="space-y-1">
                       <button
@@ -296,7 +304,7 @@ function AuthForm() {
                             <div className="text-xs font-bold leading-tight truncate flex items-center gap-1 text-slate-900 dark:text-slate-100">
                               Test Account
                               <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                                (Demo)
+                                (Account 1)
                               </span>
                             </div>
                             <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate">
@@ -305,6 +313,36 @@ function AuthForm() {
                           </div>
                         </div>
                         {email.trim().toLowerCase() === "test@ex.com" && (
+                          <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0 ml-1.5" />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleSelectSecondAccount}
+                        className={`w-full flex items-center justify-between p-2 rounded-xl text-left transition-all active:scale-[0.98] ${
+                          email.trim().toLowerCase() === "hraza5701@gmail.com"
+                            ? "bg-blue-50/90 dark:bg-blue-950/60 text-blue-950 dark:text-blue-200 ring-1 ring-blue-500/20"
+                            : "hover:bg-slate-100/80 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-bold text-white shrink-0 bg-emerald-600 shadow-xs">
+                            HR
+                          </span>
+                          <div className="truncate">
+                            <div className="text-xs font-bold leading-tight truncate flex items-center gap-1 text-slate-900 dark:text-slate-100">
+                              Hraza
+                              <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                (Account 2)
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate">
+                              hraza5701@gmail.com
+                            </div>
+                          </div>
+                        </div>
+                        {email.trim().toLowerCase() === "hraza5701@gmail.com" && (
                           <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0 ml-1.5" />
                         )}
                       </button>
