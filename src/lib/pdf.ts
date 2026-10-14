@@ -16,27 +16,49 @@ function findSystemBrowserExecutable(): string | undefined {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
 
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const programFiles = process.env.PROGRAMFILES || "C:\\Program Files";
+  const programFilesX86 = process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)";
+  const programW6432 = process.env.ProgramW6432 || "";
+
   const commonPaths: string[] = [
-    // Windows Chrome
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    // Windows Edge
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    // Standard Windows Program Files
+    path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+    path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+    // 64-bit on 32-bit redirect
+    ...(programW6432
+      ? [
+          path.join(programW6432, "Google", "Chrome", "Application", "chrome.exe"),
+          path.join(programW6432, "Microsoft", "Edge", "Application", "msedge.exe"),
+        ]
+      : []),
+    // User local AppData (standard user-level non-admin installs)
+    ...(localAppData
+      ? [
+          path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+          path.join(localAppData, "Microsoft", "Edge", "Application", "msedge.exe"),
+          path.join(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+        ]
+      : []),
     // Linux Chrome & Chromium
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
     "/snap/bin/chromium",
+    "/usr/bin/brave-browser",
     // macOS
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
   ];
 
   for (const p of commonPaths) {
     try {
-      if (fs.existsSync(p)) {
+      if (p && fs.existsSync(p)) {
         return p;
       }
     } catch {
@@ -68,10 +90,28 @@ async function launchBrowser(): Promise<Browser> {
       args: launchArgs,
     });
   } catch (err) {
-    console.warn("Default Puppeteer launch failed, attempting system browser fallback...", err);
+    console.warn("Default Puppeteer launch failed, attempting executablePath resolution...", err);
   }
 
-  // Attempt 2: Try explicit system browser executable
+  // Attempt 2: Try resolved puppeteer executablePath
+  try {
+    const maybePath = typeof puppeteer.executablePath === "function" ? puppeteer.executablePath() : undefined;
+    const resolvedPath = maybePath && typeof (maybePath as unknown as Promise<string>).then === "function"
+      ? await (maybePath as unknown as Promise<string>)
+      : (maybePath as unknown as string);
+
+    if (resolvedPath && fs.existsSync(resolvedPath)) {
+      return await puppeteer.launch({
+        headless: true,
+        args: launchArgs,
+        executablePath: resolvedPath,
+      });
+    }
+  } catch (err) {
+    console.warn("Resolved puppeteer executablePath launch failed...", err);
+  }
+
+  // Attempt 3: Try explicit system browser executable
   const systemPath = findSystemBrowserExecutable();
   if (systemPath) {
     try {
@@ -91,8 +131,12 @@ async function launchBrowser(): Promise<Browser> {
 /**
  * Builds high-fidelity HTML markup styled to match Google Docs print sheets
  */
-function buildGoogleDocsPdfHtml(htmlContent: string, title: string): string {
-  const safeTitle = title.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export function buildGoogleDocsPdfHtml(
+  htmlContent: string,
+  title: string,
+  format: "A4" | "Letter" = "A4"
+): string {
+  const safeTitle = (title || "Untitled Document").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -102,11 +146,8 @@ function buildGoogleDocsPdfHtml(htmlContent: string, title: string): string {
   <title>${safeTitle}</title>
   <style>
     @page {
-      size: A4;
-      margin: 20mm 20mm 20mm 20mm;
-      @bottom-right {
-        content: counter(page);
-      }
+      size: ${format};
+      margin: 0;
     }
 
     *, *::before, *::after {
@@ -190,14 +231,19 @@ function buildGoogleDocsPdfHtml(htmlContent: string, title: string): string {
     }
 
     ul, ol {
-      margin-top: 0;
+      margin-top: 4pt;
       margin-bottom: 8pt;
       padding-left: 24pt;
     }
 
     li {
-      margin-bottom: 4pt;
+      margin-bottom: 3pt;
       line-height: 1.6;
+    }
+
+    li > p {
+      margin-top: 0;
+      margin-bottom: 2pt;
     }
 
     blockquote {
@@ -238,6 +284,14 @@ function buildGoogleDocsPdfHtml(htmlContent: string, title: string): string {
       border: 1px solid #cbd5e1;
       padding: 7pt 10pt;
       vertical-align: top;
+    }
+
+    td > p:first-child, th > p:first-child {
+      margin-top: 0;
+    }
+
+    td > p:last-child, th > p:last-child {
+      margin-bottom: 0;
     }
 
     tbody tr:nth-child(even) {
@@ -284,6 +338,8 @@ function buildGoogleDocsPdfHtml(htmlContent: string, title: string): string {
       height: auto;
       page-break-inside: avoid;
       break-inside: avoid;
+      display: inline-block;
+      border-radius: 4pt;
     }
 
     .document-content {
@@ -320,23 +376,23 @@ export async function generatePdfFromHtml(
       deviceScaleFactor: 2,
     });
 
-    const fullHtml = buildGoogleDocsPdfHtml(htmlContent, title);
+    const fullHtml = buildGoogleDocsPdfHtml(htmlContent, title, format);
     await page.setContent(fullHtml, {
-      waitUntil: ["load", "networkidle0"],
+      waitUntil: "load",
       timeout: 30000,
     });
 
-    const safeTitleHeader = title.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const safeTitleHeader = (title || "Untitled Document").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
     const headerTemplate = `
-      <div style="font-size: 8pt; font-family: Arial, sans-serif; color: #94a3b8; width: 100%; padding: 0 20mm; display: flex; justify-content: space-between; align-items: center;">
+      <div style="font-size: 8pt; font-family: Arial, Helvetica, sans-serif; color: #94a3b8; width: 100%; padding: 0 20mm; display: flex; justify-content: space-between; align-items: center; box-sizing: border-box; margin: 0;">
         <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%;">${safeTitleHeader}</span>
         <span></span>
       </div>
     `;
 
     const footerTemplate = `
-      <div style="font-size: 8pt; font-family: Arial, sans-serif; color: #94a3b8; width: 100%; padding: 0 20mm; display: flex; justify-content: space-between; align-items: center;">
+      <div style="font-size: 8pt; font-family: Arial, Helvetica, sans-serif; color: #94a3b8; width: 100%; padding: 0 20mm; display: flex; justify-content: space-between; align-items: center; box-sizing: border-box; margin: 0;">
         <span></span>
         <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
       </div>

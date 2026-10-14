@@ -1,10 +1,26 @@
 // @ts-expect-error - html-to-docx does not ship with official ts declarations
 import HTMLtoDOCX from "html-to-docx";
-import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel, Table as DocxTable, TableRow, TableCell, WidthType } from "docx";
+import { Document as DocxDocument, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 
 interface DocxExportOptions {
   title?: string;
   creator?: string;
+}
+
+/**
+ * Decodes standard HTML entities to plain text equivalents
+ */
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&mdash;/gi, "—")
+    .replace(/&ndash;/gi, "–");
 }
 
 /**
@@ -22,8 +38,8 @@ function normalizeHtmlForWord(rawHtml: string): string {
   // Replace stray <hr> with <hr/>
   html = html.replace(/<hr(?!\s*\/)>/gi, "<hr/>");
 
-  // Ensure paragraphs or list items aren't completely blank
-  html = html.replace(/<p>\s*<\/p>/gi, "<p>&nbsp;</p>");
+  // Normalize TipTap empty paragraphs (including trailing break tags)
+  html = html.replace(/<p>\s*(<br[^>]*>)?\s*<\/p>/gi, "<p>&nbsp;</p>");
 
   return html;
 }
@@ -31,25 +47,103 @@ function normalizeHtmlForWord(rawHtml: string): string {
 /**
  * Fallback generator using docx library if html-to-docx fails on malformed HTML
  */
-async function fallbackGenerateDocx(htmlContent: string, title: string): Promise<Buffer> {
-  const plainText = htmlContent
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<\/li>/gi, "\n")
-    .replace(/<[^>]+>/g, "");
+export async function fallbackGenerateDocx(htmlContent: string, title: string): Promise<Buffer> {
+  // Extract structured block items: headings, list items, and standard paragraphs
+  const blockRegex = /<(h[1-3]|p|li|blockquote)[^>]*>(.*?)<\/\1>/gis;
+  const elements: Paragraph[] = [];
+  let match: RegExpExecArray | null;
 
-  const paragraphs = plainText
-    .split("\n\n")
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map(
-      (text) =>
+  while ((match = blockRegex.exec(htmlContent)) !== null) {
+    const tag = match[1].toLowerCase();
+    const rawInner = match[2];
+    const textContent = decodeHtmlEntities(rawInner.replace(/<[^>]+>/g, "").trim());
+
+    if (!textContent) continue;
+
+    if (tag === "h1") {
+      elements.push(
         new Paragraph({
-          children: [new TextRun({ text, font: "Arial", size: 22 })],
-          spacing: { after: 200, line: 360 },
+          text: textContent,
+          heading: HeadingLevel.HEADING_1,
+          spacing: { before: 240, after: 120 },
         })
+      );
+    } else if (tag === "h2") {
+      elements.push(
+        new Paragraph({
+          text: textContent,
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 200, after: 100 },
+        })
+      );
+    } else if (tag === "h3") {
+      elements.push(
+        new Paragraph({
+          text: textContent,
+          heading: HeadingLevel.HEADING_3,
+          spacing: { before: 160, after: 80 },
+        })
+      );
+    } else if (tag === "li") {
+      elements.push(
+        new Paragraph({
+          children: [new TextRun({ text: textContent, font: "Arial", size: 22 })],
+          bullet: { level: 0 },
+          spacing: { after: 60, line: 320 },
+        })
+      );
+    } else {
+      elements.push(
+        new Paragraph({
+          children: [new TextRun({ text: textContent, font: "Arial", size: 22 })],
+          spacing: { after: 160, line: 360 },
+        })
+      );
+    }
+  }
+
+  // If no structured blocks were parsed, fallback to plain text chunks
+  if (elements.length === 0) {
+    const plainText = decodeHtmlEntities(
+      htmlContent
+        .replace(/<\/p>/gi, "\n\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/h[1-6]>/gi, "\n\n")
+        .replace(/<\/li>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
     );
+
+    const paragraphs = plainText
+      .split("\n\n")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map(
+        (text) =>
+          new Paragraph({
+            children: [new TextRun({ text, font: "Arial", size: 22 })],
+            spacing: { after: 200, line: 360 },
+          })
+      );
+
+    elements.push(...paragraphs);
+  }
+
+  // Check if first element is already a heading with the same title to avoid duplicate title headers
+  const firstElemText = (elements[0] as unknown as { text?: string })?.text?.trim().toLowerCase();
+  const hasTitleAtTop = firstElemText === (title || "").trim().toLowerCase();
+
+  const docChildren: Paragraph[] = [];
+  if (!hasTitleAtTop && title && title.trim()) {
+    docChildren.push(
+      new Paragraph({
+        text: title.trim(),
+        heading: HeadingLevel.HEADING_1,
+        spacing: { after: 280 },
+      })
+    );
+  }
+
+  docChildren.push(...(elements.length > 0 ? elements : [new Paragraph({ text: "" })]));
 
   const doc = new DocxDocument({
     title,
@@ -65,14 +159,7 @@ async function fallbackGenerateDocx(htmlContent: string, title: string): Promise
             },
           },
         },
-        children: [
-          new Paragraph({
-            text: title,
-            heading: HeadingLevel.HEADING_1,
-            spacing: { after: 300 },
-          }),
-          ...(paragraphs.length > 0 ? paragraphs : [new Paragraph({ text: "" })]),
-        ],
+        children: docChildren,
       },
     ],
   });
