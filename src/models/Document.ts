@@ -7,6 +7,8 @@ export interface IDocument extends MongooseDocument {
   ownerId: string;
   sharedWith: string[];
   viewers?: string[];
+  generalAccess?: "restricted" | "anyoneWithLink";
+  generalAccessRole?: "viewer" | "editor";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +39,16 @@ const DocumentSchema = new Schema<IDocument>(
     viewers: {
       type: [String],
       default: [],
+    },
+    generalAccess: {
+      type: String,
+      enum: ["restricted", "anyoneWithLink"],
+      default: "restricted",
+    },
+    generalAccessRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
     },
   },
   {

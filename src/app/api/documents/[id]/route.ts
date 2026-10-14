@@ -27,17 +27,24 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       searchParams.get("userEmail") || request.headers.get("x-user-email")
     );
 
+    const doc = await DocumentModel.findById(id).lean();
+
+    if (!doc) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    // 1. If document has General Access enabled ("anyoneWithLink"), allow public viewing
+    const isPublicLink = doc.generalAccess === "anyoneWithLink";
+    if (isPublicLink) {
+      return NextResponse.json(doc, { status: 200 });
+    }
+
+    // 2. Restricted documents require authenticated user identity
     if (!user) {
       return NextResponse.json(
         { error: "User ID is required for access verification" },
         { status: 400 }
       );
-    }
-
-    const doc = await DocumentModel.findById(id).lean();
-
-    if (!doc) {
-      return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
     // Access control check: user must be owner or in sharedWith (matching ID or email)
@@ -88,17 +95,33 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       bodyUserEmail || request.headers.get("x-user-email")
     );
 
+    const doc = await DocumentModel.findById(id);
+
+    if (!doc) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    const isPublicLink = doc.generalAccess === "anyoneWithLink";
+    const isPublicEditor = isPublicLink && doc.generalAccessRole === "editor";
+
+    // If document is public with Editor role, edits are allowed
+    if (isPublicEditor) {
+      if (title !== undefined) {
+        doc.title = title.trim() || "Untitled Document";
+      }
+      if (content !== undefined) {
+        doc.content = content;
+      }
+      doc.updatedAt = new Date();
+      await doc.save();
+      return NextResponse.json(doc, { status: 200 });
+    }
+
     if (!user) {
       return NextResponse.json(
         { error: "User ID is required to update document" },
         { status: 400 }
       );
-    }
-
-    const doc = await DocumentModel.findById(id);
-
-    if (!doc) {
-      return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
     const userIdentifiersLower = user.identifiers.map((i) => i.toLowerCase());
@@ -124,7 +147,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    if (isViewer) {
+    if (isViewer || (isPublicLink && !isOwner && !isShared && doc.generalAccessRole === "viewer")) {
       return NextResponse.json(
         {
           error: "Access denied. Viewers have read-only permissions on this document.",

@@ -21,7 +21,17 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { userId: bodyUserId, userEmail: bodyUserEmail, sharedWith, viewers, action, targetUserId, targetRole } = body;
+    const {
+      userId: bodyUserId,
+      userEmail: bodyUserEmail,
+      sharedWith,
+      viewers,
+      action,
+      targetUserId,
+      targetRole,
+      generalAccess,
+      generalAccessRole,
+    } = body;
     const user = getEffectiveUser(
       request,
       bodyUserId,
@@ -58,6 +68,20 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return t === docOwnerLower || userIdentifiersLower.includes(t);
     };
 
+    let hasShareUpdate = false;
+
+    // 1. General access settings (Restricted vs Anyone with the link)
+    if (generalAccess === "restricted" || generalAccess === "anyoneWithLink") {
+      doc.generalAccess = generalAccess;
+      hasShareUpdate = true;
+    }
+
+    if (generalAccessRole === "viewer" || generalAccessRole === "editor") {
+      doc.generalAccessRole = generalAccessRole;
+      hasShareUpdate = true;
+    }
+
+    // 2. Collaborators access list
     if (Array.isArray(sharedWith)) {
       // Direct replacement of shared list (filtering out owner and duplicates)
       doc.sharedWith = Array.from(new Set(sharedWith.filter((uid: string) => !isTargetOwner(uid))));
@@ -67,6 +91,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         // Retain existing viewers that are still in sharedWith
         doc.viewers = (doc.viewers || []).filter((uid: string) => doc.sharedWith.includes(uid));
       }
+      hasShareUpdate = true;
     } else if (action && targetUserId) {
       if (action === "add") {
         if (!isTargetOwner(targetUserId) && !doc.sharedWith.includes(targetUserId)) {
@@ -78,6 +103,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         } else if (targetRole === "Editor") {
           doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
         }
+        hasShareUpdate = true;
       } else if (action === "updateRole") {
         if (targetRole === "Viewer") {
           if (!doc.viewers) doc.viewers = [];
@@ -85,13 +111,17 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         } else {
           doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
         }
+        hasShareUpdate = true;
       } else if (action === "remove") {
         doc.sharedWith = doc.sharedWith.filter((uid: string) => uid !== targetUserId);
         doc.viewers = (doc.viewers || []).filter((uid: string) => uid !== targetUserId);
+        hasShareUpdate = true;
       }
-    } else {
+    }
+
+    if (!hasShareUpdate) {
       return NextResponse.json(
-        { error: "Invalid share payload: provide 'sharedWith' array or 'action' with 'targetUserId'" },
+        { error: "Invalid share payload: provide 'sharedWith' array, 'action', or 'generalAccess'" },
         { status: 400 }
       );
     }
@@ -105,6 +135,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         documentId: doc._id,
         sharedWith: doc.sharedWith,
         viewers: doc.viewers || [],
+        generalAccess: doc.generalAccess || "restricted",
+        generalAccessRole: doc.generalAccessRole || "viewer",
         ownerId: doc.ownerId,
       },
       { status: 200 }
