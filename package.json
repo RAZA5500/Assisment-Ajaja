@@ -1,0 +1,39 @@
+{
+  "name": "ajaia-document-editor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tiptap/extension-bullet-list": "^2.10.4",
+    "@tiptap/extension-heading": "^2.10.4",
+    "@tiptap/extension-ordered-list": "^2.10.4",
+    "@tiptap/extension-underline": "^2.10.4",
+    "@tiptap/pm": "^2.10.4",
+    "@tiptap/react": "^2.10.4",
+    "@tiptap/starter-kit": "^2.10.4",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "mongoose": "^8.8.4",
+    "next": "^14.2.24",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hot-toast": "^2.6.1",
+    "tailwind-merge": "^2.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
