@@ -105,9 +105,11 @@ export default function ShareModal({
         headers: {
           "Content-Type": "application/json",
           "x-user-id": currentUser.id,
+          "x-user-email": currentUser.email || "",
         },
         body: JSON.stringify({
           userId: currentUser.id,
+          userEmail: currentUser.email,
           sharedWith: updatedSharedWith,
           viewers: updatedViewers,
         }),
